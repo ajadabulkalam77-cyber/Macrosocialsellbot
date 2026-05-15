@@ -30,6 +30,7 @@ EMOJI = {
     "price": "💵", "language": "🌐", "back": "🔙", "add": "➕", "remove": "❌",
     "refresh": "🔄", "data": "📊", "broadcast": "📢", "dollar": "💱", "stats": "📈",
     "pending": "⏳", "approved": "✅", "rejected": "❌", "complete": "✔️",
+    "facebook": "📘", "instagram": "📸",
 }
 
 def emo(name):
@@ -51,7 +52,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             price REAL,
-            status TEXT DEFAULT 'active'
+            status TEXT DEFAULT 'active',
+            id_category TEXT DEFAULT 'auto'
         );
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +114,13 @@ def init_db():
             timestamp TEXT
         );
     ''')
+    
+    # Add id_category column if it doesn't exist
+    try:
+        cur.execute("ALTER TABLE id_types ADD COLUMN id_category TEXT DEFAULT 'auto'")
+    except:
+        pass
+    
     cur.execute("INSERT OR IGNORE INTO settings VALUES ('usd_rate','125')")
     cur.execute("INSERT OR IGNORE INTO settings VALUES ('min_withdraw','10')")
     cur.execute("INSERT OR IGNORE INTO settings VALUES ('submission_open','1')")
@@ -119,11 +128,15 @@ def init_db():
     
     if cur.execute("SELECT COUNT(*) FROM id_types").fetchone()[0] == 0:
         default_types = [
-            ("Cookies", 4.0), ("2FA", 5.0), ("Clone 13", 13.0),
-            ("Number 00 Friend 2FA I'D", 4.5), ("Number 00 Cookies I'D", 3.5)
+            ("Cookies", 4.0, "facebook"),
+            ("2FA", 5.0, "facebook"),
+            ("Clone 13", 13.0, "facebook"),
+            ("Number 00 Friend 2FA I'D", 4.5, "facebook"),
+            ("Number 00 Cookies I'D", 3.5, "facebook"),
+            ("Instagram ID", 3.5, "instagram"),
         ]
-        for name, price in default_types:
-            cur.execute("INSERT INTO id_types (name,price) VALUES (?,?)", (name, price))
+        for name, price, category in default_types:
+            cur.execute("INSERT INTO id_types (name,price,id_category) VALUES (?,?,?)", (name, price, category))
     conn.commit()
     return conn, cur
 
@@ -201,6 +214,54 @@ def send_target_message(target_user_id, text=None, file_id=None, file_type=None,
     except:
         return False
 
+# ================= ID CATEGORY DETECTION =================
+def detect_id_category(type_name):
+    """Auto-detect ID category from name"""
+    name_lower = type_name.lower()
+    if 'instagram' in name_lower or 'insta' in name_lower:
+        return 'instagram'
+    elif 'facebook' in name_lower or 'fb' in name_lower:
+        return 'facebook'
+    else:
+        return 'auto'  # Will ask user during submission
+
+def get_id_category_from_db(type_id):
+    """Get category from database"""
+    result = cursor.execute("SELECT id_category FROM id_types WHERE id=?", (type_id,)).fetchone()
+    if result:
+        return result[0]
+    return 'auto'
+
+def is_valid_id(id_str, category):
+    """Check if ID is valid based on category"""
+    id_str = str(id_str).strip()
+    
+    if category == 'instagram':
+        # Instagram: allow letters, numbers, dots, underscores, minimum 1 char
+        clean_id = id_str.replace('@', '').strip()
+        if clean_id and len(clean_id) >= 1:
+            # Check if it looks like Instagram username (no spaces, valid chars)
+            if re.match(r'^[a-zA-Z0-9._]+$', clean_id):
+                return clean_id
+        return None
+    
+    elif category == 'facebook':
+        # Facebook: numbers only, minimum 5 digits
+        uid_str = re.sub(r'\D', '', id_str)
+        if uid_str.isdigit() and len(uid_str) >= 5:
+            return uid_str
+        return None
+    
+    else:
+        # Auto detect: try Facebook first, then Instagram
+        uid_str = re.sub(r'\D', '', id_str)
+        if uid_str.isdigit() and len(uid_str) >= 5:
+            return uid_str
+        clean_id = id_str.replace('@', '').strip()
+        if clean_id and len(clean_id) >= 1 and re.match(r'^[a-zA-Z0-9._]+$', clean_id):
+            return clean_id
+        return None
+
 def main_menu(user_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton(f"{emo('rocket')} Submit ID"), KeyboardButton(f"{emo('star')} My Profile"))
@@ -232,7 +293,7 @@ def start(message):
         conn.commit()
     monitor_log(f"🚀 New User Started\n👤 User: {uid}\n📛 @{uname}")
     data_log(f"🆕 New User\n👤 `{uid}` @{uname}\n📅 {bd_time()}")
-    bot.send_message(uid, f"{emo('fire')} *WELCOME TO MACRO SOCIAL ID SELL BOT!*\n\n✨ EARN BY SELLING SOCIAl ID'S.\n💰 Instant payments.\n{emo('rocket')} Let's begin!", parse_mode="Markdown", reply_markup=main_menu(uid))
+    bot.send_message(uid, f"{emo('fire')} *WELCOME TO MACRO SOCIAL ID SELL BOT🔥!*\n\n✨ EARN BY SELLING SOCIAL ID'S\n💰 INSTANT PAYMENT.\n{emo('rocket')} Let's begin!", parse_mode="Markdown", reply_markup=main_menu(uid))
 
 @bot.message_handler(func=lambda m: f"{emo('language')} Language" in m.text)
 def language_menu(message):
@@ -266,16 +327,17 @@ def check_balance(message):
     uid = message.from_user.id
     bal = cursor.execute("SELECT balance, expected_balance FROM users WHERE user_id=?", (uid,)).fetchone()
     if bal:
-        bot.send_message(uid, f"{emo('money')} *YOUR BALANCE*\n\n🔵 Current: *{bal[0]:.2f}* Tk\n⏳ Expected: *{bal[1]:.2f}* Tk\n💲Min Withdraw: *{min_withdraw()}* Tk", parse_mode="Markdown")
+        bot.send_message(uid, f"{emo('money')} *YOUR BALANCE*\n\n💎 Current: *{bal[0]:.2f}* Tk\n⏳ Expected: *{bal[1]:.2f}* Tk\n📌 Min Withdraw: *{min_withdraw()}* Tk", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: f"{emo('price')} Price & Rules" in m.text)
 def price_list(message):
     bot.send_chat_action(message.chat.id, 'typing')
-    types = cursor.execute("SELECT name, price, status FROM id_types").fetchall()
+    types = cursor.execute("SELECT name, price, status, id_category FROM id_types").fetchall()
     text = f"{emo('money')} *PRICE LIST*\n\n"
     for t in types:
         status_emoji = "✅" if t[2] == 'active' else "❌"
-        text += f"📌 *{t[0]}*: {t[1]} Tk {status_emoji}\n\n"
+        category_emoji = "📘" if t[3] == 'facebook' else "📸" if t[3] == 'instagram' else "🆔"
+        text += f"{category_emoji} *{t[0]}*: {t[1]} Tk {status_emoji}\n\n"
     text += f"📌 Min Withdraw: *{min_withdraw()}* Tk\n💱 Exchange: *1$ = {usd_rate()}* Tk"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -291,14 +353,15 @@ def submit_start(message):
     if not submission_open() and not is_admin(uid):
         bot.send_message(uid, "⚠️ Submissions are currently closed.")
         return
-    types = cursor.execute("SELECT id, name, price FROM id_types WHERE status='active'").fetchall()
+    types = cursor.execute("SELECT id, name, price, id_category FROM id_types WHERE status='active'").fetchall()
     if not types:
         bot.send_message(uid, "No active ID types available.")
         return
     markup = InlineKeyboardMarkup(row_width=1)
     for t in types:
-        markup.add(InlineKeyboardButton(f"📦 {t[1]} - {t[2]} Tk", callback_data=f"subtype_{t[0]}"))
-    bot.send_message(uid, "📌 CHOOSE ID TYPE⬇️:", reply_markup=markup)
+        category_emoji = "📘" if t[3] == 'facebook' else "📸" if t[3] == 'instagram' else "🆔"
+        markup.add(InlineKeyboardButton(f"{category_emoji} {t[1]} - {t[2]} Tk", callback_data=f"subtype_{t[0]}"))
+    bot.send_message(uid, "㊗ CHOOSE ID TYPE⬇️:", reply_markup=markup)
 
 user_state = {}
 admin_state = {}
@@ -307,63 +370,149 @@ admin_state = {}
 def select_subtype(call):
     uid = call.from_user.id
     tid = int(call.data.split('_')[1])
-    type_info = cursor.execute("SELECT name, price FROM id_types WHERE id=?", (tid,)).fetchone()
+    type_info = cursor.execute("SELECT name, price, id_category FROM id_types WHERE id=?", (tid,)).fetchone()
     if not type_info:
         bot.answer_callback_query(call.id, "Invalid type!")
         return
-    user_state[uid] = {'type_id': tid, 'type_name': type_info[0], 'price': type_info[1]}
+    
+    category = type_info[2]
+    user_state[uid] = {
+        'type_id': tid, 
+        'type_name': type_info[0], 
+        'price': type_info[1],
+        'category': category
+    }
+    
     bot.delete_message(call.message.chat.id, call.message.message_id)
-    msg = bot.send_message(uid, f"📦 *{type_info[0]}*\n💰 {type_info[1]} Tk per ID\n\n📎 Send your `.xlsx` file containing UIDs (first column only):", parse_mode="Markdown")
+    
+    if category == 'instagram':
+        id_type_text = "Instagram IDs (letters, numbers, dots, underscores)"
+        example = "heatherbirch805, heat.herbirch805, heat_herbirch805"
+    elif category == 'facebook':
+        id_type_text = "Facebook UIDs (numbers only, minimum 5 digits)"
+        example = "1000123456789, 61551234567890"
+    else:
+        id_type_text = "IDs (numbers or text)"
+        example = "1000123456789 or heatherbirch805"
+    
+    msg = bot.send_message(uid, 
+        f"📦 *{type_info[0]}*\n"
+        f"📂 Type: {id_type_text}\n"
+        f"💰 {type_info[1]} Tk per ID\n\n"
+        f"📎 Send your `.xlsx` file containing IDs (first column only):\n"
+        f"Example: `{example}`", 
+        parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_submission_file)
 
 def process_submission_file(message):
     uid = message.from_user.id
     if uid not in user_state: return
     if not message.document or not message.document.file_name.endswith('.xlsx'):
-        bot.send_message(uid, "❌ Invalid file. Please send an xlsx file✅")
+        bot.send_message(uid, "❌ Invalid file. Please send an `.xlsx` file.")
         return
+    
     state = user_state[uid]
     file_id = message.document.file_id
     file_name = message.document.file_name
+    id_type = state['type_name']
+    category = state['category']
+    
     try:
         file_info = bot.get_file(file_id)
         excel_data = bot.download_file(file_info.file_path)
         wb = openpyxl.load_workbook(io.BytesIO(excel_data))
         sheet = wb.active
-        uids = []
+        ids_list = []
         duplicates = []
+        invalid_ids = []
+        
         for row in sheet.iter_rows(values_only=True):
             if row and row[0]:
-                uid_str = re.sub(r'\D', '', str(row[0]))
-                if uid_str.isdigit() and len(uid_str) >= 5:
-                    if cursor.execute("SELECT 1 FROM used_uids WHERE uid=?", (uid_str,)).fetchone():
-                        duplicates.append(uid_str)
+                id_str = str(row[0]).strip()
+                
+                # Validate based on category
+                valid_id = is_valid_id(id_str, category)
+                
+                if valid_id:
+                    if cursor.execute("SELECT 1 FROM used_uids WHERE uid=?", (valid_id,)).fetchone():
+                        duplicates.append(valid_id)
                     else:
-                        uids.append(uid_str)
+                        ids_list.append(valid_id)
+                else:
+                    if id_str:  # Skip empty cells
+                        invalid_ids.append(id_str)
+                            
     except Exception as e:
         logging.error(f"Excel parsing error for user {uid}: {e}")
-        bot.send_message(uid, "❌ Failed to read Excel file. Make sure first column contains UIDs.")
+        bot.send_message(uid, "❌ Failed to read Excel file. Make sure first column contains IDs.")
         return
-    if not uids and duplicates:
-        bot.send_message(uid, f"⚠️ All {len(duplicates)} UIDs are already used. Submission rejected.")
+    
+    if not ids_list and duplicates:
+        bot.send_message(uid, f"⚠️ All {len(duplicates)} IDs are already used. Submission rejected.")
+        del user_state[uid]
         return
-    if not uids:
-        bot.send_message(uid, "⚠️ No valid UIDs found in file.")
+    
+    if not ids_list:
+        msg = "⚠️ No valid IDs found in file."
+        if invalid_ids:
+            msg += f"\n❌ {len(invalid_ids)} invalid IDs found."
+        bot.send_message(uid, msg)
+        del user_state[uid]
         return
-    total = state['price'] * len(uids)
-    cursor.execute("INSERT INTO submissions (user_id, file_id, file_name, id_type, id_count, price_per_id, total_amount, submit_date) VALUES (?,?,?,?,?,?,?,?)", (uid, file_id, file_name, state['type_name'], len(uids), state['price'], total, bd_time()))
+    
+    total = state['price'] * len(ids_list)
+    valid_count = len(ids_list)
+    duplicate_count = len(duplicates)
+    invalid_count = len(invalid_ids)
+    
+    cursor.execute("INSERT INTO submissions (user_id, file_id, file_name, id_type, id_count, price_per_id, total_amount, submit_date) VALUES (?,?,?,?,?,?,?,?)", 
+                   (uid, file_id, file_name, state['type_name'], valid_count, state['price'], total, bd_time()))
     sub_id = cursor.lastrowid
-    for u in uids:
-        cursor.execute("INSERT OR IGNORE INTO used_uids (uid, user_id, submission_id, added_date) VALUES (?,?,?,?)", (u, uid, sub_id, bd_time()))
+    
+    for id_val in ids_list:
+        cursor.execute("INSERT OR IGNORE INTO used_uids (uid, user_id, submission_id, added_date) VALUES (?,?,?,?)", 
+                       (id_val, uid, sub_id, bd_time()))
+    
     cursor.execute("UPDATE users SET expected_balance = expected_balance + ? WHERE user_id=?", (total, uid))
     conn.commit()
-    bot.send_message(uid, f"✅ *Submission #{sub_id} successful!*\n\n📦 {state['type_name']}\n📊 {len(uids)} IDs\n💰 {total} Tk added to expected balance.\n🆔 #{sub_id}", parse_mode="Markdown")
-    admin_text = f"📥 *NEW SUBMISSION #{sub_id}*\n\n👤 `{uid}` @{message.from_user.username}\n📦 {state['type_name']}\n📊 {len(uids)} IDs\n💰 {total} Tk\n📅 {bd_time()}"
+    
+    # Build response message
+    response_msg = f"✅ *Submission #{sub_id} successful!*\n\n" \
+                   f"📦 {state['type_name']}\n" \
+                   f"📊 Valid IDs: {valid_count}\n" \
+                   f"💰 {total} Tk added to expected balance.\n" \
+                   f"🆔 #{sub_id}"
+    
+    if duplicate_count > 0:
+        response_msg += f"\n\n⚠️ {duplicate_count} duplicate IDs were skipped."
+    
+    if invalid_count > 0:
+        response_msg += f"\n❌ {invalid_count} invalid IDs were skipped."
+    
+    bot.send_message(uid, response_msg, parse_mode="Markdown")
+    
+    admin_text = f"📥 *NEW SUBMISSION #{sub_id}*\n\n" \
+                 f"👤 `{uid}` @{message.from_user.username}\n" \
+                 f"📦 {state['type_name']}\n" \
+                 f"📊 Valid IDs: {valid_count}\n"
+    
+    if duplicate_count > 0:
+        admin_text += f"⚠️ Duplicates: {duplicate_count}\n"
+    
+    if invalid_count > 0:
+        admin_text += f"❌ Invalid: {invalid_count}\n"
+    
+    admin_text += f"💰 {total} Tk\n📅 {bd_time()}"
+    
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(f"{emo('tick')} Approve", callback_data=f"approve_{sub_id}"), InlineKeyboardButton(f"{emo('cross')} Reject", callback_data=f"reject_{sub_id}"), InlineKeyboardButton("📎 View File", callback_data=f"viewfile_{sub_id}"))
+    markup.add(InlineKeyboardButton(f"{emo('tick')} Approve", callback_data=f"approve_{sub_id}"), 
+               InlineKeyboardButton(f"{emo('cross')} Reject", callback_data=f"reject_{sub_id}"), 
+               InlineKeyboardButton("📎 View File", callback_data=f"viewfile_{sub_id}"))
+    
     notify_admins(admin_text, file_id=file_id, reply_markup=markup)
-    monitor_log(uid, message.from_user.username, f"📤 SUBMITTED #{sub_id}", f"{state['type_name']} - {len(uids)} IDs")
-    data_log(f"📥 *New Submission #{sub_id}*\n👤 {uid} @{message.from_user.username}\n📦 {state['type_name']}\n📊 {len(uids)} IDs\n💰 {total} Tk\nStatus: ⏳ Pending\n📅 {bd_time()}", file_id=file_id)
+    monitor_log(uid, message.from_user.username, f"📤 SUBMITTED #{sub_id}", f"{state['type_name']} - {valid_count} IDs")
+    data_log(f"📥 *New Submission #{sub_id}*\n👤 {uid} @{message.from_user.username}\n📦 {state['type_name']}\n📊 {valid_count} IDs\n💰 {total} Tk\nStatus: ⏳ Pending\n📅 {bd_time()}", file_id=file_id)
+    
     del user_state[uid]
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('viewfile_'))
@@ -379,10 +528,9 @@ def view_file_callback(call):
     else:
         bot.answer_callback_query(call.id, "No file found for this submission.")
 
-# ================= FIXED SUBMISSION APPROVE WITH CUSTOM AMOUNT =================
+# ================= SUBMISSION APPROVE WITH CUSTOM AMOUNT =================
 @bot.callback_query_handler(func=lambda c: c.data.startswith('approve_') and not c.data.startswith('approve_wd_'))
 def approve_with_amount_prompt(call):
-    """First step: Ask admin for approval amount"""
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "Admins only.")
         return
@@ -404,7 +552,6 @@ def approve_with_amount_prompt(call):
     
     user_id, id_type, full_amount, id_count, status = sub
     
-    # Store state for this admin
     admin_state[call.from_user.id] = {
         'action_type': 'approve_submission',
         'sub_id': sub_id,
@@ -426,7 +573,6 @@ def approve_with_amount_prompt(call):
     bot.register_next_step_handler(msg, process_approve_amount)
 
 def process_approve_amount(message):
-    """Second step: Process the approval amount"""
     admin_id = message.from_user.id
     
     if admin_id not in admin_state or admin_state[admin_id].get('action_type') != 'approve_submission':
@@ -462,18 +608,15 @@ def process_approve_amount(message):
         del admin_state[admin_id]
         return
     
-    # Process approval
     cursor.execute("UPDATE submissions SET status='approved', approve_date=?, approved_amount=? WHERE id=?", 
                    (bd_time(), amount, sub_id))
     cursor.execute("UPDATE users SET balance = balance + ?, expected_balance = expected_balance - ? WHERE user_id=?", 
                    (amount, full_amount, user_id))
     
-    # Add to balance log
     cursor.execute("INSERT INTO balance_log (user_id, amount, type, admin_id, timestamp) VALUES (?,?,?,?,?)",
                    (user_id, amount, 'submission_approve', admin_id, bd_time()))
     conn.commit()
     
-    # Notify user
     try:
         user_msg = f"{emo('tick')} *Submission #{sub_id} Approved!*\n\n" \
                    f"📦 Type: {id_type}\n" \
@@ -484,7 +627,6 @@ def process_approve_amount(message):
     except Exception as e:
         logging.error(f"Failed to notify user {user_id} about approval #{sub_id}: {e}")
     
-    # Confirm to admin
     admin_msg = f"✅ *Submission #{sub_id} Approved*\n\n" \
                 f"👤 User: `{user_id}`\n" \
                 f"📦 Type: {id_type}\n" \
@@ -492,13 +634,11 @@ def process_approve_amount(message):
                 f"📅 {bd_time()}"
     bot.send_message(admin_id, admin_msg, parse_mode="Markdown")
     
-    # Log
     monitor_log(user_id, "user", f"✅ APPROVED #{sub_id}", f"+{amount:.2f} Tk | Admin: {admin_id}")
     data_log(f"✅ *Submission Approved #{sub_id}*\n👤 {user_id}\n📦 {id_type}\n💰 +{amount:.2f} Tk\nAdmin: {admin_id}\n📅 {bd_time()}")
     
     del admin_state[admin_id]
 
-# Keep the rejection handler
 @bot.callback_query_handler(func=lambda c: c.data.startswith('reject_'))
 def reject_submission(call):
     if not is_admin(call.from_user.id):
@@ -554,7 +694,7 @@ def withdraw_start(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("💳 Bkash", callback_data="wd_bkash"), InlineKeyboardButton("💳 Nagad", callback_data="wd_nagad"), InlineKeyboardButton("₿ Binance", callback_data="wd_binance"))
     markup.add(InlineKeyboardButton(f"{emo('back')} Back", callback_data="wd_back"))
-    bot.send_message(uid, f"{emo('withdraw')} SELECT WITHDRAWL METHOD⬇️:", reply_markup=markup)
+    bot.send_message(uid, f"{emo('withdraw')} Select withdrawal method:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data == 'wd_back')
 def wd_back(call):
@@ -643,7 +783,7 @@ def wd_cancel(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     bot.send_message(call.message.chat.id, f"{emo('cross')} Cancelled.", reply_markup=main_menu(call.from_user.id))
 
-# ================= FIXED WITHDRAWAL ADMIN ACTIONS =================
+# ================= WITHDRAWAL ADMIN ACTIONS =================
 @bot.callback_query_handler(func=lambda c: c.data.startswith('approve_wd_'))
 def approve_withdrawal(call):
     bot.answer_callback_query(call.id, "⏳ Processing approval...", show_alert=False)
@@ -668,7 +808,6 @@ def approve_withdrawal(call):
     
     user_id, amount_tk, amount_usd, method, status = wd
     
-    # Step 1: Deduct balance
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=? AND balance >= ?", 
                    (amount_tk, user_id, amount_tk))
     
@@ -676,30 +815,25 @@ def approve_withdrawal(call):
         bot.answer_callback_query(call.id, "❌ User has insufficient balance!", show_alert=True)
         return
     
-    # Step 2: Mark as completed
     cursor.execute("UPDATE withdrawals SET status='completed', complete_date=? WHERE id=?", 
                    (bd_time(), wid))
     
-    # Step 3: Add to balance log
     cursor.execute("INSERT INTO balance_log (user_id, amount, type, admin_id, timestamp) VALUES (?,?,?,?,?)",
                    (user_id, -amount_tk, 'withdrawal', call.from_user.id, bd_time()))
     conn.commit()
     
-    # Step 4: Notify user
     try:
         msg = f"{emo('tick')} *Withdrawal #{wid} Approved!*\n\n" \
               f"💰 Amount: {amount_tk:.2f} Tk\n" \
               f"💳 Method: {method.upper()}\n" \
               f"✅ Status: Completed\n\n" \
               f"Amount has been deducted from your balance."
-              
         if method == 'binance':
             msg += f"\n💱 Equivalent: ${amount_usd:.2f} USDT"
         bot.send_message(user_id, msg, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Failed to notify user {user_id} about withdrawal #{wid}: {e}")
     
-    # Step 5: Update admin message
     try:
         new_text = f"✅ *WITHDRAWAL #{wid} APPROVED*\n\n" \
                    f"👤 User: `{user_id}`\n" \
@@ -717,7 +851,6 @@ def approve_withdrawal(call):
     
     bot.answer_callback_query(call.id, f"✅ Withdrawal #{wid} Approved!", show_alert=True)
     
-    # Step 6: Log to monitor and data groups
     monitor_log(f"✅ Withdrawal #{wid} Approved | User: {user_id} | Amount: {amount_tk} Tk | Admin: {call.from_user.id}")
     data_log(f"✅ *Withdrawal Approved #{wid}*\n👤 {user_id}\n💰 {amount_tk} Tk\nAdmin: {call.from_user.id}\n📅 {bd_time()}")
 
@@ -745,11 +878,9 @@ def reject_withdrawal(call):
     
     user_id, amount_tk, amount_usd, method, status = wd
     
-    # Mark as rejected
     cursor.execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (wid,))
     conn.commit()
     
-    # Notify user
     try:
         msg = f"{emo('cross')} *Withdrawal #{wid} Rejected*\n\n" \
               f"💰 Amount: {amount_tk:.2f} Tk\n" \
@@ -762,7 +893,6 @@ def reject_withdrawal(call):
     except Exception as e:
         logging.error(f"Failed to notify user {user_id} about withdrawal rejection #{wid}: {e}")
     
-    # Update admin message
     try:
         new_text = f"❌ *WITHDRAWAL #{wid} REJECTED*\n\n" \
                    f"👤 User: `{user_id}`\n" \
@@ -780,7 +910,6 @@ def reject_withdrawal(call):
     
     bot.answer_callback_query(call.id, f"❌ Withdrawal #{wid} Rejected!", show_alert=True)
     
-    # Log
     monitor_log(f"❌ Withdrawal #{wid} Rejected | User: {user_id} | Admin: {call.from_user.id}")
     data_log(f"❌ *Withdrawal Rejected #{wid}*\n👤 {user_id}\nAdmin: {call.from_user.id}\n📅 {bd_time()}")
 
@@ -804,8 +933,8 @@ def all_submissions(message):
         return
     text = "📊 *ALL SUBMISSIONS (last 30)*\n\n"
     for s in subs:
-        emoji = "✅" if s[5]=='approved' else "❌" if s[5]=='rejected' else "⏳"
-        text += f"#{s[0]} | {s[6][:10]} | 👤 {s[1]}\n└ {s[2]} | {s[3]}x | {s[4]} Tk | {emoji}\n\n"
+        status_emoji = "✅" if s[5]=='approved' else "❌" if s[5]=='rejected' else "⏳"
+        text += f"#{s[0]} | {s[6][:10]} | 👤 {s[1]}\n└ {s[2]} | {s[3]}x | {s[4]} Tk | {status_emoji}\n\n"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text == "📋 Withdrawals" and is_admin(m.from_user.id))
@@ -818,11 +947,11 @@ def all_withdrawals(message):
     text = "📋 *WITHDRAWALS (last 30)*\n\n"
     markup = InlineKeyboardMarkup(row_width=2)
     for w in wds:
-        emoji = "✅" if w[6]=='completed' else "❌" if w[6]=='rejected' else "⏳"
+        status_emoji = "✅" if w[6]=='completed' else "❌" if w[6]=='rejected' else "⏳"
         text += f"#{w[0]} | @{w[2] or w[1]} | {w[3]} | {w[4]} Tk"
         if w[3] == 'binance':
             text += f" | ${w[5]:.2f}"
-        text += f" | {emoji} | {w[7][:16]}\n"
+        text += f" | {status_emoji} | {w[7][:16]}\n"
         if w[6] == 'pending':
             markup.add(InlineKeyboardButton(f"✅ #{w[0]}", callback_data=f"approve_wd_{w[0]}"), InlineKeyboardButton(f"❌ #{w[0]}", callback_data=f"reject_wd_{w[0]}"))
     bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup if markup.keyboard else None)
@@ -940,30 +1069,148 @@ def ub_history(call):
         text += f"`{l[0][:16]}` @{l[1] or l[0]} {sign}{l[2]:.2f} Tk\n"
     bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
 
+# ================= ADD ID TYPE WITH CATEGORY SELECTION =================
 @bot.message_handler(func=lambda m: m.text == f"{emo('add')} Add ID Type" and is_admin(m.from_user.id))
 def add_id_type(message):
-    msg = bot.send_message(message.chat.id, "Format: `Name | Price`\nExample: `Premium ID | 7.5`", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, lambda m: add_id_exec(m))
+    msg = bot.send_message(message.chat.id, 
+        "📝 *Add New ID Type*\n\n"
+        "Format: `Name | Price`\n"
+        "Example: `Premium ID | 7.5`\n\n"
+        "Send the name and price:", 
+        parse_mode="Markdown")
+    bot.register_next_step_handler(msg, add_id_get_info)
 
-def add_id_exec(message):
+def add_id_get_info(message):
+    admin_id = message.from_user.id
     try:
-        name, price = [x.strip() for x in message.text.split('|', 1)]
-        price = float(price)
-        cursor.execute("INSERT INTO id_types (name, price) VALUES (?,?)", (name, price))
-        conn.commit()
-        bot.send_message(message.chat.id, f"✅ Added: {name} - {price} Tk")
+        parts = message.text.split('|')
+        if len(parts) != 2:
+            raise ValueError("Invalid format")
+        name = parts[0].strip()
+        price = float(parts[1].strip())
+        
+        if not name or price <= 0:
+            raise ValueError("Invalid values")
+        
+        # Store in state
+        admin_state[admin_id] = {
+            'action_type': 'add_id_type',
+            'name': name,
+            'price': price
+        }
+        
+        # Auto-detect category
+        auto_category = detect_id_category(name)
+        
+        if auto_category != 'auto':
+            # Auto-detected, confirm with admin
+            category_name = "📸 Instagram" if auto_category == 'instagram' else "📘 Facebook"
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("✅ Yes, save", callback_data=f"addid_confirm_{auto_category}"),
+                InlineKeyboardButton("❌ No, change", callback_data="addid_change")
+            )
+            bot.send_message(admin_id, 
+                f"🔍 *Auto-Detected ID Type*\n\n"
+                f"📝 Name: {name}\n"
+                f"💰 Price: {price} Tk\n"
+                f"📂 Category: {category_name}\n\n"
+                f"Is this correct?",
+                parse_mode="Markdown",
+                reply_markup=markup)
+        else:
+            # Can't auto-detect, ask admin
+            ask_category(message)
+            
     except:
-        bot.send_message(message.chat.id, "❌ Invalid format. Use: Name | Price")
+        bot.send_message(message.chat.id, "❌ Invalid format. Use: Name | Price\nExample: Premium ID | 7.5")
+
+def ask_category(message):
+    admin_id = message.from_user.id
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📘 Facebook ID (Numbers)", callback_data="addid_category_facebook"),
+        InlineKeyboardButton("📸 Instagram ID (Text)", callback_data="addid_category_instagram"),
+        InlineKeyboardButton("🆔 Auto Detect", callback_data="addid_category_auto")
+    )
+    
+    msg_text = "📂 *Select ID Category*\n\n" \
+               "How should this ID be validated?\n\n" \
+               "📘 *Facebook* - Numbers only (min 5 digits)\n" \
+               "📸 *Instagram* - Text+Numbers (no spaces)\n" \
+               "🆔 *Auto* - Auto detect per ID"
+    
+    if isinstance(message, telebot.types.Message):
+        bot.send_message(message.chat.id, msg_text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        bot.edit_message_text(msg_text, message.chat.id, message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda c: c.data == 'addid_change')
+def addid_change(call):
+    """Admin wants to change auto-detected category"""
+    bot.answer_callback_query(call.id)
+    ask_category(call.message)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('addid_confirm_'))
+def addid_confirm(call):
+    """Confirm auto-detected category and save"""
+    admin_id = call.from_user.id
+    category = call.data.split('_')[2]
+    
+    if admin_id not in admin_state or admin_state[admin_id].get('action_type') != 'add_id_type':
+        bot.answer_callback_query(call.id, "❌ Session expired!")
+        return
+    
+    state = admin_state[admin_id]
+    name = state['name']
+    price = state['price']
+    
+    cursor.execute("INSERT INTO id_types (name, price, id_category) VALUES (?,?,?)", (name, price, category))
+    conn.commit()
+    
+    category_name = "📸 Instagram" if category == 'instagram' else "📘 Facebook" if category == 'facebook' else "🆔 Auto"
+    
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(admin_id, f"✅ Added: {name} - {price} Tk\n📂 Category: {category_name}")
+    bot.answer_callback_query(call.id, "✅ ID Type added successfully!", show_alert=True)
+    
+    del admin_state[admin_id]
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('addid_category_'))
+def addid_category(call):
+    """Save with selected category"""
+    admin_id = call.from_user.id
+    category = call.data.split('_')[2]
+    
+    if admin_id not in admin_state or admin_state[admin_id].get('action_type') != 'add_id_type':
+        bot.answer_callback_query(call.id, "❌ Session expired!")
+        return
+    
+    state = admin_state[admin_id]
+    name = state['name']
+    price = state['price']
+    
+    cursor.execute("INSERT INTO id_types (name, price, id_category) VALUES (?,?,?)", (name, price, category))
+    conn.commit()
+    
+    category_name = "📸 Instagram" if category == 'instagram' else "📘 Facebook" if category == 'facebook' else "🆔 Auto"
+    
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(admin_id, f"✅ Added: {name} - {price} Tk\n📂 Category: {category_name}")
+    bot.answer_callback_query(call.id, "✅ ID Type added successfully!", show_alert=True)
+    
+    del admin_state[admin_id]
 
 @bot.message_handler(func=lambda m: m.text == f"{emo('remove')} Remove ID Type" and is_admin(m.from_user.id))
 def remove_id_type(message):
-    types = cursor.execute("SELECT id, name FROM id_types").fetchall()
+    types = cursor.execute("SELECT id, name, id_category FROM id_types").fetchall()
     if not types:
         bot.send_message(message.chat.id, "No ID types to remove.")
         return
     markup = InlineKeyboardMarkup(row_width=1)
     for t in types:
-        markup.add(InlineKeyboardButton(f"❌ {t[1]}", callback_data=f"del_id_{t[0]}"))
+        cat_emoji = "📘" if t[2] == 'facebook' else "📸" if t[2] == 'instagram' else "🆔"
+        markup.add(InlineKeyboardButton(f"❌ {cat_emoji} {t[1]}", callback_data=f"del_id_{t[0]}"))
     bot.send_message(message.chat.id, "Select type to remove:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('del_id_'))
@@ -1135,8 +1382,8 @@ def send_files_for_date(message):
     bot.send_message(message.chat.id, f"📅 *Files for {target_date}*\nFound {len(submissions)} submissions. Sending files...", parse_mode="Markdown")
     for sub in submissions:
         sub_id, uid, file_id, filename, id_type, count, amount, status = sub
-        emoji = "✅" if status=='approved' else "❌" if status=='rejected' else "⏳"
-        caption = f"📁 #{sub_id} | 👤 {uid} | {id_type} x{count} | {amount} Tk | {emoji}\n📎 {filename}"
+        status_emoji = "✅" if status=='approved' else "❌" if status=='rejected' else "⏳"
+        caption = f"📁 #{sub_id} | 👤 {uid} | {id_type} x{count} | {amount} Tk | {status_emoji}\n📎 {filename}"
         try:
             bot.send_document(message.chat.id, file_id, caption=caption)
         except:
@@ -1385,7 +1632,11 @@ def adm_del(call):
 if __name__ == "__main__":
     print("=" * 50)
     print("🤖 BOT STARTED SUCCESSFULLY!")
-    print("✅ Withdrawal Approve: Working with all checks!")
-    print("✅ Submission Approve: Amount selection by admin!")
+    print("✅ Method 3: Auto-Detect + Manual Override!")
+    print("✅ Instagram ID: Text+Numbers+Dots+Underscores!")
+    print("✅ Facebook ID: Numbers only (min 5 digits)!")
+    print("✅ Smart duplicate detection for all types!")
+    print("✅ Withdrawal Approve: Working!")
+    print("✅ Submission Approve: Amount selection!")
     print("=" * 50)
     bot.infinity_polling(timeout=60, interval=0)
